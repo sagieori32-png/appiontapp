@@ -400,3 +400,6 @@ details[open] > .add-sum::before { content: '−'; }
 .people li { flex-wrap: wrap; }
 @media (max-width: 760px) { .vote-bar .hide-mobile, label.field.hide-mobile { display: none; } }
 .admin-note { margin-bottom: 18px; border-right: 4px solid var(--ink); }
+.login-alt { margin-top: 16px; }
+.login-alt summary { cursor: pointer; text-align: center; color: var(--muted); font-weight: 600; padding: 8px; }
+.login-alt[open] summary { margin-bottom: 8px; }

@@ -143,44 +143,81 @@
   function renderLogin(next) {
     $('#topbar').hidden = true;
     app.classList.add('narrow');
-    const fromPoll = next && next.startsWith('/p/');
-    app.innerHTML = `
-      <div class="login-wrap">
+    const pm = next && next.match(/^\/p\/([\w-]+)/);
+    const pid = pm ? pm[1] : null;
+
+    const loginCard = (title, intro) => `
         <form class="panel login-card stack" id="loginForm" novalidate>
-          <div class="brand-big">
-            <img src="/icon.svg" alt="" width="64" height="64">
-            <h1>תיאום פגישות</h1>
-            <p class="muted">${fromPoll ? 'הוזמנתם לבחור מועד לפגישה. יש לכם חשבון במערכת? התחברו כאן.' : 'התחברו עם האימייל והסיסמה שקיבלתם ממנהל המערכת.'}</p>
-          </div>
+          ${title}
+          ${intro}
           <label class="field"><span>אימייל</span>
-            <input class="input ltr" type="email" name="email" autocomplete="username" required autofocus></label>
+            <input class="input ltr" type="email" name="email" autocomplete="username" required ${pid ? '' : 'autofocus'}></label>
           <label class="field"><span>סיסמה</span>
             <input class="input ltr" type="password" name="password" autocomplete="current-password" required></label>
           <div class="error" id="loginErr" hidden></div>
-          <button class="btn primary" style="width:100%">כניסה</button>
-          ${fromPoll ? '' : '<p class="muted" style="font-size:14px;text-align:center">אין לכם חשבון? פנו למנהל המערכת.</p>'}
-        </form>
-        ${fromPoll ? `<form class="panel login-card stack" id="linkForm" novalidate style="margin-top:16px">
-          <h2>הוזמנתם ואין לכם חשבון?</h2>
-          <p class="muted">אין צורך בחשבון. הזינו את האימייל שאליו קיבלתם את ההזמנה, ונשלח אליו קישור אישי לסקר.</p>
-          <label class="field"><span>האימייל שלכם</span><input class="input ltr" type="email" name="email" required></label>
-          <div id="linkMsg" hidden></div>
-          <button class="btn" style="width:100%">שליחת קישור אישי</button>
-        </form>` : ''}
-      </div>`;
-    const linkForm = $('#linkForm');
-    if (linkForm) linkForm.onsubmit = async e => {
-      e.preventDefault();
-      const msg = $('#linkMsg'), pid = next.split('/')[2].split('?')[0];
-      try {
-        const r = await api('POST', `/api/polls/${pid}/request-link`, { email: linkForm.email.value });
-        msg.className = 'note';
-        msg.textContent = r.mail_configured
-          ? 'אם הכתובת מוזמנת לסקר, שלחנו אליה קישור אישי. בדקו את תיבת הדואר (וגם את הספאם).'
-          : 'שליחת מיילים עדיין לא הוגדרה במערכת. בקשו מיוצר/ת הסקר לשלוח לכם את הקישור האישי.';
-      } catch (ex) { msg.className = 'error'; msg.textContent = ex.message; }
-      msg.hidden = false;
-    };
+          <button class="btn ${pid ? '' : 'primary'}" style="width:100%">כניסה</button>
+          ${pid ? '' : '<p class="muted" style="font-size:14px;text-align:center">אין לכם חשבון? פנו למנהל המערכת.</p>'}
+        </form>`;
+
+    if (!pid) {
+      app.innerHTML = `<div class="login-wrap">${loginCard(`
+          <div class="brand-big">
+            <img src="/icon.svg" alt="" width="64" height="64">
+            <h1>תיאום פגישות</h1>
+            <p class="muted">התחברו עם האימייל והסיסמה שקיבלתם ממנהל המערכת.</p>
+          </div>`, '')}</div>`;
+    } else {
+      // קישור כללי לסקר: עונים בלי חשבון (שם + אימייל), או מתחברים
+      app.innerHTML = `
+        <div class="login-wrap"><div style="width:100%;max-width:400px">
+          <form class="panel login-card stack" id="joinForm" novalidate>
+            <div class="brand-big">
+              <img src="/icon.svg" alt="" width="56" height="56">
+              <p class="muted" id="joinOwner">הוזמנתם לבחור מועד לפגישה</p>
+              <h1 id="joinTitle">&nbsp;</h1>
+            </div>
+            <p class="muted">אין צורך בחשבון. רשמו שם ואימייל, וסמנו אילו מועדים מתאימים לכם.</p>
+            <label class="field"><span>השם שלכם</span><input class="input" name="name" autocomplete="name" required maxlength="80" autofocus></label>
+            <label class="field"><span>האימייל שלכם</span><input class="input ltr" type="email" name="email" autocomplete="email" required>
+              <small>לכתובת הזו יישלח הזימון ליומן כשייקבע מועד.</small></label>
+            <div id="joinMsg" hidden></div>
+            <button class="btn sun" style="width:100%">המשך לבחירת מועדים</button>
+          </form>
+          <details class="login-alt">
+            <summary>יש לכם חשבון במערכת? התחברו</summary>
+            ${loginCard('', '')}
+          </details>
+        </div></div>`;
+      api('GET', `/api/polls/${pid}/public`).then(p => {
+        $('#joinTitle').textContent = p.title;
+        $('#joinOwner').textContent = p.owner_name ? `${p.owner_name} מזמין/ה אתכם לבחור מועד` : 'הוזמנתם לבחור מועד לפגישה';
+        if (p.closed) {
+          $('#joinMsg').className = 'note'; $('#joinMsg').hidden = false;
+          $('#joinMsg').textContent = 'הסקר הזה כבר נסגר.';
+          $('#joinForm button').disabled = true;
+        }
+      }).catch(ex => {
+        $('#joinTitle').textContent = 'הסקר לא נמצא';
+        $('#joinMsg').className = 'error'; $('#joinMsg').hidden = false; $('#joinMsg').textContent = ex.message;
+        $('#joinForm button').disabled = true;
+      });
+      $('#joinForm').onsubmit = async e => {
+        e.preventDefault();
+        const f = e.target, msg = $('#joinMsg'), btn = $('button', f);
+        msg.hidden = true;
+        if (!f.name.value.trim()) { msg.className = 'error'; msg.textContent = 'רשמו את שמכם'; msg.hidden = false; return; }
+        btn.disabled = true;
+        try {
+          const r = await api('POST', `/api/polls/${pid}/join`, { name: f.name.value, email: f.email.value });
+          try { sessionStorage.setItem('joinName', f.name.value.trim()); } catch { /* לא חשוב */ }
+          navigate(`/p/${pid}?t=${encodeURIComponent(r.token)}`, true);
+        } catch (ex) {
+          msg.className = ex.message.includes('כבר התקבלה') ? 'note' : 'error';
+          msg.textContent = ex.message; msg.hidden = false; btn.disabled = false;
+        }
+      };
+    }
+
     $('#loginForm').onsubmit = async e => {
       e.preventDefault();
       const f = e.target, err = $('#loginErr'), btn = $('button', f);
@@ -538,6 +575,7 @@
     const mine = votes.find(v => v.is_me);
     const myAnswers = { ...(mine?.answers || {}) };
     let myName = mine?.name || me.name || '';
+    if (!myName) { try { myName = sessionStorage.getItem('joinName') || ''; } catch { /* לא חשוב */ } }
     const open = !poll.closed;
 
     // ספירה ומועד מוביל
@@ -783,7 +821,7 @@
         <section class="panel stack">
           <h2>שליחה למשתתפים</h2>
           ${!state.mailConfigured ? '<p class="note">שליחת מייל אוטומטית עדיין לא הוגדרה בשרת. בינתיים שלחו לכל משתתף את הקישור האישי שלו מרשימת המשתתפים (כפתורי ההעתקה והמייל ליד כל שם).</p>' : ''}
-          <p class="muted" style="font-size:15px">כל משתתף מקבל במייל קישור אישי, שמאפשר לענות בלי חשבון. הקישור הכללי מתאים למשתמשים רשומים; מוזמן בלי חשבון שיפתח אותו יוכל לבקש את הקישור האישי שלו במייל.</p>
+          <p class="muted" style="font-size:15px">כל משתתף מקבל במייל קישור אישי, שמאפשר לענות בלי חשבון. את הקישור הכללי אפשר לשלוח לכל אחד: מי שפותח אותו רושם שם ואימייל ועונה על הסקר הזה בלבד, בלי חשבון.</p>
           <div>
             <label class="field"><span>קישור כללי לסקר</span></label>
             <div class="linkbox"><input class="input" readonly value="${esc(poll.link)}" id="linkInput" aria-label="קישור לסקר"><button type="button" class="btn" id="copyLink">${icons.copy} העתקה</button></div>
