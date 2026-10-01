@@ -270,8 +270,10 @@ function validateOptions(list) {
   return { options: out };
 }
 
+// scope=all – מנהל המערכת רואה את כל הסקרים של כל המשתמשים
 app.get('/api/polls', requireUser, async (req, res) => {
   const email = normEmail(req.user.email), uid = req.user.id;
+  const all = req.query.scope === 'all' && req.user.is_admin ? 1 : 0;
   const rows = await db.all(`
     SELECT p.*, u.name AS owner_name,
       (SELECT COUNT(*) FROM votes v WHERE v.poll_id = p.id) AS vote_count,
@@ -281,10 +283,10 @@ app.get('/api/polls', requireUser, async (req, res) => {
       EXISTS (SELECT 1 FROM votes v WHERE v.poll_id = p.id AND v.email = ?) AS i_voted,
       (p.owner_id = ?) AS is_owner
     FROM polls p JOIN users u ON u.id = p.owner_id
-    WHERE p.owner_id = ?
+    WHERE ? = 1 OR p.owner_id = ?
        OR EXISTS (SELECT 1 FROM poll_invites i WHERE i.poll_id = p.id AND i.email = ?)
        OR EXISTS (SELECT 1 FROM votes v WHERE v.poll_id = p.id AND v.email = ?)
-    ORDER BY p.created_at DESC, p.id DESC`, email, uid, uid, email, email);
+    ORDER BY p.created_at DESC, p.id DESC`, email, uid, all, uid, email, email);
   res.json({ polls: rows.map(p => ({
     public_id: p.public_id, title: p.title, owner_name: p.owner_name, closed: !!p.closed,
     vote_count: p.vote_count, invite_count: p.invite_count, option_count: p.option_count,
@@ -328,7 +330,9 @@ app.get('/api/polls/:pid', async (req, res) => {
                                 JOIN votes v ON v.id = a.vote_id WHERE v.poll_id = ?`, poll.id);
   const byVote = {};
   answers.forEach(a => { (byVote[a.vote_id] ||= {})[a.option_id] = a.answer; });
-  const isOwner = !viewer.guest && poll.owner_id === viewer.user_id;
+  const isCreator = !viewer.guest && poll.owner_id === viewer.user_id;
+  // מנהל המערכת מקבל את כל כלי הניהול של הסקר, גם אם לא הוא יצר אותו
+  const isOwner = isCreator || (!viewer.guest && !!req.user?.is_admin);
   const base = baseUrl(req);
   const invites = !isOwner ? [] : await db.all(`SELECT i.email, i.sent_at, i.token, u.name FROM poll_invites i
                               LEFT JOIN users u ON u.email = i.email WHERE i.poll_id = ? ORDER BY i.email`, poll.id);
@@ -340,6 +344,7 @@ app.get('/api/polls/:pid', async (req, res) => {
       owner_name: owner?.name, owner_email: owner?.email, link: pollLink(req, poll.public_id),
     },
     is_owner: isOwner,
+    admin_view: isOwner && !isCreator,
     me: { name: viewer.name, email: viewer.email, guest: viewer.guest },
     options,
     agent: {
@@ -425,10 +430,14 @@ app.post('/api/polls/:pid/send', requireUser, async (req, res) => {
   const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
   const base = baseUrl(req);
   const failed = [];
+  let lastError = '';
   for (const inv of invites) {
     try { await mailer.pollInvite({ to: inv.email, ownerName: owner.name, ownerEmail: owner.email, poll, link: `${base}/p/${poll.public_id}?t=${inv.token}` });
       await db.run('UPDATE poll_invites SET sent_at = ? WHERE poll_id = ? AND email = ?', db.now(), poll.id, inv.email); }
-    catch (e) { console.error('mail failed', inv.email, e.message); failed.push(inv.email); }
+    catch (e) { console.error('mail failed', inv.email, e.message); failed.push(inv.email); lastError = e.message; }
+  }
+  if (failed.length === invites.length) {
+    return fail(res, 502, `שליחת המייל נכשלה: ${lastError}. בדקו את הגדרות שליחת המיילים ב-Render.`);
   }
   res.json({ sent: invites.length - failed.length, failed, simulated: !mailer.configured });
 });
@@ -580,7 +589,8 @@ async function ensureAdmin() {
   await ensureAdmin();
   app.listen(PORT, () => {
     console.log(`השרת פועל: http://localhost:${PORT} (מסד נתונים: ${db.kind === 'postgres' ? 'Postgres' : 'SQLite מקומי'})`);
-    if (!mailer.configured) console.log('שימו לב: SMTP לא מוגדר – מיילים יודפסו ליומן במקום להישלח.');
+    console.log(mailer.configured ? `שליחת מיילים: ${mailer.mode === 'webhook' ? 'Google Apps Script' : 'SMTP'}`
+      : 'שימו לב: שליחת מיילים לא מוגדרת – מיילים יודפסו ליומן במקום להישלח.');
   });
 })().catch(e => {
   console.error('\nהשרת לא הצליח לעלות:', e.message);
