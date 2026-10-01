@@ -399,3 +399,4 @@ details[open] > .add-sum::before { content: '−'; }
 .icon-btn { padding: 5px 8px; min-width: 36px; }
 .people li { flex-wrap: wrap; }
 @media (max-width: 760px) { .vote-bar .hide-mobile, label.field.hide-mobile { display: none; } }
+.admin-note { margin-bottom: 18px; border-right: 4px solid var(--ink); }

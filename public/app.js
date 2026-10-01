@@ -256,15 +256,21 @@
   let dashTab = 'all';
   async function renderDashboard() {
     setView('<div class="spinner"></div>');
-    const { polls } = await api('GET', '/api/polls');
+    const [{ polls }, everything] = await Promise.all([
+      api('GET', '/api/polls'),
+      state.me.is_admin ? api('GET', '/api/polls?scope=all') : Promise.resolve(null),
+    ]);
     const groups = {
       all: polls,
+      everyone: everything ? everything.polls : [],
       todo: polls.filter(p => !p.is_owner && !p.i_voted && !p.closed),
       mine: polls.filter(p => p.is_owner),
     };
     const draw = () => {
       const list = groups[dashTab];
       const tabs = [['all', 'הכול'], ['todo', `ממתינים לתשובה שלי (${groups.todo.length})`], ['mine', 'סקרים שיצרתי']];
+      if (state.me.is_admin) tabs.push(['everyone', `כל הסקרים במערכת (${groups.everyone.length})`]);
+      if (!groups[dashTab] || (dashTab === 'everyone' && !state.me.is_admin)) dashTab = 'all';
       $('#dash').innerHTML = `
         <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${k === dashTab}" class="${k === dashTab ? 'active' : ''}" data-tab="${k}">${l}</button>`).join('')}</div>
         ${list.length ? `<div class="poll-list">${list.map(pollItem).join('')}</div>` : emptyDash()}`;
@@ -279,6 +285,7 @@
     draw();
   }
   function emptyDash() {
+    if (dashTab === 'everyone') return `<div class="empty"><h2>עוד אין סקרים במערכת</h2><p>כשמשתמשים ייצרו סקרים, הם יופיעו כאן.</p></div>`;
     if (dashTab === 'todo') return `<div class="empty"><h2>אין סקרים שמחכים לכם</h2><p>כשמישהו יזמין אתכם לפגישה, היא תופיע כאן.</p></div>`;
     return `<div class="empty"><h2>עוד אין כאן סקרים</h2><p>צרו סקר, בחרו כמה מועדים אפשריים והזמינו את המשתתפים.</p><a class="btn sun" href="/new" data-link>יצירת סקר ראשון</a></div>`;
   }
@@ -558,6 +565,7 @@
 
     setView(`
       ${me.guest ? `<div class="guest-bar"><img src="/icon.svg" alt="" width="28" height="28"><span>עונים בתור <b class="ltr">${esc(me.email)}</b>. זה קישור אישי – אל תעבירו אותו לאחרים.</span></div>` : ''}
+      ${data.admin_view ? `<div class="note admin-note"><b>תצוגת מנהל:</b> זה סקר של ${esc(poll.owner_name)}. יש לכם את כל כלי הניהול שלו, ופעולות שתבצעו (שליחה, סגירה, מחיקה) ייעשו בשמו.</div>` : ''}
       ${created && is_owner ? `<div class="note" style="margin-bottom:18px"><b>הסקר נוצר.</b> עכשיו שלחו אותו למשתתפים – במייל מהמערכת, או העתיקו את הקישור ושלחו בעצמכם (ראו למטה).</div>` : ''}
       ${finalOpt ? `<div class="final-banner">${dayTile(finalOpt.date, 'best')}<div><b>נקבע מועד לפגישה</b><div style="font-size:20px;font-family:var(--display)">${esc(optionText(finalOpt))}</div></div></div>` : ''}
       <div class="poll-head">
@@ -840,15 +848,23 @@
     const share = $('#nativeShare');
     if (share) share.onclick = () => navigator.share({ title: poll.title, text: `בחירת מועד: ${poll.title}`, url: poll.link }).catch(() => {});
 
-    const send = async onlyUnsent => {
+    const send = async (onlyUnsent, btn) => {
+      const label = btn.innerHTML;
+      $$('#sendAll, #sendUnsent').forEach(b => { b.disabled = true; });
+      btn.textContent = 'שולח…';
       try {
         const r = await api('POST', `/api/polls/${pid}/send`, { only_unsent: onlyUnsent });
-        toast(r.simulated ? 'SMTP לא מוגדר – המיילים נרשמו ביומן השרת בלבד' : `נשלחו ${r.sent} מיילים${r.failed.length ? `, ${r.failed.length} נכשלו` : ''}`, r.simulated || r.failed.length > 0);
+        toast(r.simulated ? 'שליחת מיילים לא מוגדרת בשרת – המיילים לא נשלחו'
+          : `נשלחו ${r.sent} מיילים${r.failed.length ? `, ${r.failed.length} נכשלו` : ''}`, r.simulated || r.failed.length > 0);
         renderPoll(pid, false);
-      } catch (ex) { toast(ex.message, true); }
+      } catch (ex) {
+        toast(ex.message, true);
+        $$('#sendAll, #sendUnsent').forEach(b => { b.disabled = false; });
+        btn.innerHTML = label;
+      }
     };
-    $('#sendAll').onclick = () => send(false);
-    if ($('#sendUnsent')) $('#sendUnsent').onclick = () => send(true);
+    $('#sendAll').onclick = e => send(false, e.currentTarget);
+    if ($('#sendUnsent')) $('#sendUnsent').onclick = e => send(true, e.currentTarget);
 
     api('GET', '/api/users').then(({ users }) => {
       $('#userList2').innerHTML = users.map(u => `<option value="${esc(u.email)}">${esc(u.name)}</option>`).join('');
