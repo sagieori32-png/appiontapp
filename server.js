@@ -557,8 +557,53 @@ app.post('/api/polls/:pid/request-link', async (req, res) => {
   res.json({ ok: true, mail_configured: mailer.configured });
 });
 
+// פרטים בסיסיים לדף הכניסה לסקר (שם הסקר והמארגן) – בלי מידע על משתתפים
+app.get('/api/polls/:pid/public', async (req, res) => {
+  const poll = await loadPoll(req.params.pid);
+  if (!poll) return fail(res, 404, 'הסקר לא נמצא. ייתכן שהקישור שגוי או שהסקר נמחק.');
+  const owner = await db.get('SELECT name FROM users WHERE id = ?', poll.owner_id);
+  res.json({ title: poll.title, owner_name: owner?.name || '', closed: !!poll.closed, location: poll.location });
+});
+
+// כניסה לסקר מהקישור הכללי בלי חשבון: שם + אימייל → קישור אישי לסקר הזה בלבד.
+// מי שכבר ענה עם האימייל הזה צריך את הקישור האישי שלו, כדי שאחרים לא ישנו לו את התשובות.
+app.post('/api/polls/:pid/join', async (req, res) => {
+  const now = Date.now();
+  const rec = linkRequests.get('join:' + req.ip) || { count: 0, since: now };
+  if (now - rec.since > 10 * 60 * 1000) { rec.count = 0; rec.since = now; }
+  if (++rec.count > 20) return fail(res, 429, 'יותר מדי בקשות. נסו שוב בעוד כמה דקות.');
+  linkRequests.set('join:' + req.ip, rec);
+
+  const poll = await loadPoll(req.params.pid);
+  if (!poll) return fail(res, 404, 'הסקר לא נמצא');
+  if (poll.closed) return fail(res, 400, 'הסקר כבר נסגר ולא ניתן להצטרף אליו');
+  const email = normEmail(req.body.email);
+  const name = String(req.body.name || '').trim().slice(0, 80);
+  if (!name) return fail(res, 400, 'יש לרשום את שמכם');
+  if (!EMAIL_RE.test(email)) return fail(res, 400, 'כתובת האימייל אינה תקינה');
+
+  const voted = await db.get('SELECT 1 AS x FROM votes WHERE poll_id = ? AND email = ?', poll.id, email);
+  let inv = await db.get('SELECT token FROM poll_invites WHERE poll_id = ? AND email = ?', poll.id, email);
+  if (voted) {
+    if (inv) {
+      const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
+      mailer.pollInvite({ to: email, ownerName: owner.name, ownerEmail: owner.email, poll, link: `${baseUrl(req)}/p/${poll.public_id}?t=${inv.token}` })
+        .catch(e => console.error('mail failed', email, e.message));
+    }
+    return fail(res, 409, mailer.configured
+      ? 'כבר התקבלה תשובה מהאימייל הזה. כדי לשנות אותה, שלחנו אליו עכשיו את הקישור האישי.'
+      : 'כבר התקבלה תשובה מהאימייל הזה. כדי לשנות אותה, בקשו מיוצר/ת הסקר את הקישור האישי שלכם.');
+  }
+  if (!inv) {
+    await addInvites(db, poll.id, [email]);
+    inv = await db.get('SELECT token FROM poll_invites WHERE poll_id = ? AND email = ?', poll.id, email);
+  }
+  res.json({ token: inv.token });
+});
+
 // ---------- קבצים סטטיים וניתוב צד-לקוח ----------
-app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: '1h' }));
+// בלי מטמון ארוך: הדפדפן בודק בכל טעינה אם יש גרסה חדשה (מקבל 304 אם לא)
+app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: 0, etag: true }));
 app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.use('/api', (req, res) => fail(res, 404, 'נתיב לא קיים'));
 
