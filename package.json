@@ -1,0 +1,19 @@
+{
+  "name": "meeting-scheduler",
+  "version": "1.0.0",
+  "description": "אפליקציית תיאום פגישות בסגנון Doodle",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "nodemailer": "^10.0.13"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "private": true
+}
