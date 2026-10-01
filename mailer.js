@@ -15,6 +15,8 @@ if (configured) {
 }
 
 const FROM = process.env.MAIL_FROM || process.env.SMTP_USER || 'no-reply@example.com';
+// כתובת המערכת בלבד (בלי השם), לשימוש בשם השולח של כל מארגן
+const FROM_ADDRESS = (FROM.match(/<([^>]+)>/) || [, FROM])[1].trim();
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -34,12 +36,18 @@ function button(href, label) {
   <p style="font-size:13px;color:#6B7489">אם הכפתור לא עובד, העתיקו את הקישור:<br><span style="direction:ltr;unicode-bidi:embed">${esc(href)}</span></p>`;
 }
 
-async function send({ to, subject, html, text, ics }) {
+// sender = { name, email } של מי שיצר את הסקר: המייל יוצא מכתובת המערכת,
+// אבל בשם שלו, ותשובות (Reply) מגיעות ישירות אליו.
+async function send({ to, subject, html, text, ics, sender }) {
   if (!configured) {
-    console.log(`\n[MAIL – SMTP לא מוגדר, המייל לא נשלח]\nאל: ${to}\nנושא: ${subject}\n${text || ''}${ics ? '\n[מצורף זימון ליומן invite.ics]' : ''}\n`);
+    console.log(`\n[MAIL – SMTP לא מוגדר, המייל לא נשלח]\nאל: ${to}${sender ? `\nבשם: ${sender.name} <${sender.email}>` : ''}\nנושא: ${subject}\n${text || ''}${ics ? '\n[מצורף זימון ליומן invite.ics]' : ''}\n`);
     return { simulated: true };
   }
   const msg = { from: FROM, to, subject, html, text };
+  if (sender?.email) {
+    msg.from = { name: `${sender.name} (תיאום פגישות)`, address: FROM_ADDRESS };
+    msg.replyTo = { name: sender.name, address: sender.email };
+  }
   if (ics) {
     // icalEvent גורם ל-Gmail/Outlook להציג "הוספה ליומן" עם כפתורי אישור
     msg.icalEvent = { method: 'REQUEST', filename: 'invite.ics', content: ics };
@@ -48,7 +56,7 @@ async function send({ to, subject, html, text, ics }) {
   return { simulated: false };
 }
 
-function calendarInvite({ to, ownerName, poll, when, note, link, gcal, ics }) {
+function calendarInvite({ to, ownerName, poll, when, note, link, gcal, ics, ownerEmail }) {
   const subject = `זימון: ${poll.title} – ${when}`;
   const html = layout('נקבע מועד לפגישה', `
     <p>המועד שהתאים לרוב המשתתפים נבחר, והפגישה נקבעה:</p>
@@ -60,7 +68,7 @@ function calendarInvite({ to, ownerName, poll, when, note, link, gcal, ics }) {
     ${button(gcal, 'הוספה ל-Google Calendar')}
     <p style="font-size:13px;color:#6B7489">מארגן/ת: ${esc(ownerName)} · <a href="${esc(link)}">תוצאות הסקר</a></p>`);
   const text = `נקבע מועד לפגישה "${poll.title}": ${when}\n${note || ''}\nהוספה ליומן: ${gcal}\nתוצאות: ${link}`;
-  return send({ to, subject, html, text, ics });
+  return send({ to, subject, html, text, ics, sender: { name: ownerName, email: ownerEmail } });
 }
 
 function ownerNeedsOptions({ to, poll, summary, message, suggestions, link }) {
@@ -81,16 +89,16 @@ function ownerNeedsOptions({ to, poll, summary, message, suggestions, link }) {
   return send({ to, subject, html, text });
 }
 
-function newOptions({ to, ownerName, poll, link }) {
+function newOptions({ to, ownerName, poll, link, ownerEmail }) {
   const subject = `נוספו מועדים חדשים: ${poll.title}`;
   const html = layout('נוספו מועדים חדשים', `
     <p><b>${esc(ownerName)}</b> הוסיף/ה מועדים אפשריים לפגישה <b>${esc(poll.title)}</b>.</p>
     <p>נשמח שתסמנו גם אותם, כדי שנמצא מועד שמתאים לכולם.</p>
     ${button(link, 'לסימון המועדים החדשים')}`);
-  return send({ to, subject, html, text: `נוספו מועדים חדשים לפגישה "${poll.title}". לסימון: ${link}` });
+  return send({ to, subject, html, text: `נוספו מועדים חדשים לפגישה "${poll.title}". לסימון: ${link}`, sender: { name: ownerName, email: ownerEmail } });
 }
 
-function pollInvite({ to, ownerName, poll, link }) {
+function pollInvite({ to, ownerName, poll, link, ownerEmail }) {
   const subject = `${ownerName} מזמין/ה אותך לבחור מועד: ${poll.title}`;
   const html = layout('בחירת מועד לפגישה', `
     <p>שלום,</p>
@@ -100,7 +108,7 @@ function pollInvite({ to, ownerName, poll, link }) {
     ${poll.location ? `<p style="margin:4px 0 0;color:#4A5571">מיקום: ${esc(poll.location)}</p>` : ''}
     ${button(link, 'לבחירת המועדים')}`);
   const text = `${ownerName} מזמין/ה אותך לבחור מועד לפגישה "${poll.title}".\nלבחירת המועדים: ${link}`;
-  return send({ to, subject, html, text });
+  return send({ to, subject, html, text, sender: { name: ownerName, email: ownerEmail } });
 }
 
 function welcome({ to, name, password, link }) {
@@ -116,14 +124,14 @@ function welcome({ to, name, password, link }) {
   return send({ to, subject, html, text });
 }
 
-function finalChosen({ to, ownerName, poll, when, link }) {
+function finalChosen({ to, ownerName, poll, when, link, ownerEmail }) {
   const subject = `נקבע מועד: ${poll.title}`;
   const html = layout('נקבע מועד לפגישה', `
     <p><b>${esc(ownerName)}</b> קבע/ה את מועד הפגישה <b>${esc(poll.title)}</b>:</p>
     <p style="font-size:20px;font-weight:bold;margin:12px 0">${esc(when)}</p>
     ${poll.location ? `<p>מיקום: ${esc(poll.location)}</p>` : ''}
     ${button(link, 'לפרטי הפגישה')}`);
-  return send({ to, subject, html, text: `מועד הפגישה "${poll.title}": ${when}\n${link}` });
+  return send({ to, subject, html, text: `מועד הפגישה "${poll.title}": ${when}\n${link}`, sender: { name: ownerName, email: ownerEmail } });
 }
 
 module.exports = { configured, pollInvite, welcome, finalChosen, calendarInvite, ownerNeedsOptions, newOptions };

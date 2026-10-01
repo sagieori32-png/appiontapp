@@ -422,11 +422,11 @@ app.post('/api/polls/:pid/send', requireUser, async (req, res) => {
   let invites = await db.all('SELECT email, sent_at, token FROM poll_invites WHERE poll_id = ?', poll.id);
   if (req.body.only_unsent) invites = invites.filter(i => !i.sent_at);
   if (!invites.length) return fail(res, 400, 'אין משתתפים לשליחה');
-  const owner = await db.get('SELECT name FROM users WHERE id = ?', poll.owner_id);
+  const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
   const base = baseUrl(req);
   const failed = [];
   for (const inv of invites) {
-    try { await mailer.pollInvite({ to: inv.email, ownerName: owner.name, poll, link: `${base}/p/${poll.public_id}?t=${inv.token}` });
+    try { await mailer.pollInvite({ to: inv.email, ownerName: owner.name, ownerEmail: owner.email, poll, link: `${base}/p/${poll.public_id}?t=${inv.token}` });
       await db.run('UPDATE poll_invites SET sent_at = ? WHERE poll_id = ? AND email = ?', db.now(), poll.id, inv.email); }
     catch (e) { console.error('mail failed', inv.email, e.message); failed.push(inv.email); }
   }
@@ -445,11 +445,11 @@ app.post('/api/polls/:pid/close', requireUser, async (req, res) => {
 
   let notified = 0;
   if (opt && req.body.notify) {
-    const owner = await db.get('SELECT name FROM users WHERE id = ?', poll.owner_id);
+    const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
     const recipients = await pollRecipients(poll);
     const when = formatOption(opt);
     for (const to of recipients) {
-      try { await mailer.finalChosen({ to, ownerName: owner.name, poll, when, link: await personalLink(baseUrl(req), poll, to) }); notified++; }
+      try { await mailer.finalChosen({ to, ownerName: owner.name, ownerEmail: owner.email, poll, when, link: await personalLink(baseUrl(req), poll, to) }); notified++; }
       catch (e) { console.error('mail failed', to, e.message); }
     }
   }
@@ -513,10 +513,10 @@ app.post('/api/polls/:pid/options', requireUser, async (req, res) => {
 
   let notified = 0;
   if (req.body.notify) {
-    const owner = await db.get('SELECT name FROM users WHERE id = ?', poll.owner_id);
+    const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
     const to = await pollRecipients(poll);
     for (const email of to) {
-      try { await mailer.newOptions({ to: email, ownerName: owner.name, poll, link: await personalLink(baseUrl(req), poll, email) }); notified++; }
+      try { await mailer.newOptions({ to: email, ownerName: owner.name, ownerEmail: owner.email, poll, link: await personalLink(baseUrl(req), poll, email) }); notified++; }
       catch (e) { console.error('mail failed', email, e.message); }
     }
   }
@@ -540,8 +540,8 @@ app.post('/api/polls/:pid/request-link', async (req, res) => {
   if (poll && !poll.closed) {
     const inv = await db.get('SELECT token FROM poll_invites WHERE poll_id = ? AND email = ?', poll.id, email);
     if (inv) {
-      const owner = await db.get('SELECT name FROM users WHERE id = ?', poll.owner_id);
-      mailer.pollInvite({ to: email, ownerName: owner.name, poll, link: `${baseUrl(req)}/p/${poll.public_id}?t=${inv.token}` })
+      const owner = await db.get('SELECT name, email FROM users WHERE id = ?', poll.owner_id);
+      mailer.pollInvite({ to: email, ownerName: owner.name, ownerEmail: owner.email, poll, link: `${baseUrl(req)}/p/${poll.public_id}?t=${inv.token}` })
         .catch(e => console.error('mail failed', email, e.message));
     }
   }

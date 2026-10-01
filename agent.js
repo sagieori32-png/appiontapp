@@ -248,7 +248,7 @@ async function runOnce(pollId, { link, linkFor = async () => link, force = false
       const gcal = googleCalendarLink({ poll, option: s.option, details: [poll.description, link].filter(Boolean).join('\n') });
       for (const a of attendees) {
         try {
-          await mailer.calendarInvite({ to: a.email, ownerName: ctx.owner.name, poll, when: s.when, note: decision.participant_note, link: await linkFor(a.email), gcal, ics });
+          await mailer.calendarInvite({ to: a.email, ownerName: ctx.owner.name, ownerEmail: ctx.owner.email, poll, when: s.when, note: decision.participant_note, link: await linkFor(a.email), gcal, ics });
           result.emailed++;
         } catch (e) { console.error('[agent] invite failed', a.email, e.message); }
       }
