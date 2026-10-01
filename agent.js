@@ -28,16 +28,15 @@ function formatOption(o) {
 }
 
 // ---------- איסוף הנתונים ----------
-function gather(pollId) {
-  const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
+async function gather(pollId) {
+  const poll = await db.get('SELECT * FROM polls WHERE id = ?', pollId);
   if (!poll) return null;
-  const owner = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(poll.owner_id);
-  const options = db.prepare('SELECT * FROM poll_options WHERE poll_id = ? ORDER BY sort, date, start_time').all(poll.id);
-  const invites = db.prepare(`SELECT i.email, u.name FROM poll_invites i LEFT JOIN users u ON u.email = i.email
-                              WHERE i.poll_id = ?`).all(poll.id);
-  const votes = db.prepare(`SELECT v.id, v.name, v.comment, v.email FROM votes v
-                            WHERE v.poll_id = ?`).all(poll.id);
-  const ans = db.prepare('SELECT a.vote_id, a.option_id, a.answer FROM vote_answers a JOIN votes v ON v.id = a.vote_id WHERE v.poll_id = ?').all(poll.id);
+  const owner = await db.get('SELECT id, name, email FROM users WHERE id = ?', poll.owner_id);
+  const options = await db.all('SELECT * FROM poll_options WHERE poll_id = ? ORDER BY sort, id', poll.id);
+  const invites = await db.all(`SELECT i.email, u.name FROM poll_invites i LEFT JOIN users u ON u.email = i.email
+                                WHERE i.poll_id = ?`, poll.id);
+  const votes = await db.all('SELECT v.id, v.name, v.comment, v.email FROM votes v WHERE v.poll_id = ?', poll.id);
+  const ans = await db.all('SELECT a.vote_id, a.option_id, a.answer FROM vote_answers a JOIN votes v ON v.id = a.vote_id WHERE v.poll_id = ?', poll.id);
   const byVote = {};
   ans.forEach(a => { (byVote[a.vote_id] ||= {})[a.option_id] = a.answer; });
 
@@ -67,8 +66,8 @@ function gather(pollId) {
   return { poll, owner, options, participants, stats, threshold, candidates, complete };
 }
 
-function progress(pollId) {
-  const ctx = gather(pollId);
+async function progress(pollId) {
+  const ctx = await gather(pollId);
   if (!ctx) return null;
   return {
     responded: ctx.participants.filter(p => p.complete).length,
@@ -186,11 +185,30 @@ function enforce(ctx, d) {
 const running = new Set();
 
 // link = קישור כללי לסקר; linkFor(email) = הקישור האישי של כל נמען
-async function run(pollId, { link, linkFor = () => link, force = false } = {}) {
-  if (running.has(pollId)) return { skipped: 'already_running' };
+// אם הגיעה תשובה חדשה בזמן שהסוכן רץ – הוא בודק שוב כשהוא מסיים
+const rerun = new Map();
+
+async function run(pollId, opts = {}) {
+  if (running.has(pollId)) {
+    if (!opts.force) rerun.set(pollId, opts);
+    return { skipped: 'already_running' };
+  }
   running.add(pollId);
   try {
-    const ctx = gather(pollId);
+    return await runOnce(pollId, opts);
+  } finally {
+    running.delete(pollId);
+    if (rerun.has(pollId)) {
+      const next = rerun.get(pollId);
+      rerun.delete(pollId);
+      run(pollId, next).catch(e => console.error('[agent]', e));
+    }
+  }
+}
+
+async function runOnce(pollId, { link, linkFor = async () => link, force = false } = {}) {
+  try {
+    const ctx = await gather(pollId);
     if (!ctx) return { skipped: 'not_found' };
     const { poll } = ctx;
     if (poll.closed) return { skipped: 'closed' };
@@ -218,8 +236,10 @@ async function run(pollId, { link, linkFor = () => link, force = false } = {}) {
     if (decision.decision === 'schedule') {
       const s = ctx.stats.find(x => x.option.id === decision.option_id);
       result.when = s.when;
-      db.prepare(`UPDATE polls SET closed = 1, final_option_id = ?, agent_status = 'scheduled', agent_round = round,
-                  agent_ran_at = datetime('now'), agent_result = ? WHERE id = ?`).run(s.option.id, JSON.stringify(result), poll.id);
+      // סגירה אטומית: אם הסקר כבר נסגר בינתיים – לא שולחים זימון כפול
+      const claimed = await db.run(`UPDATE polls SET closed = 1, final_option_id = ?, agent_status = 'scheduled', agent_round = round,
+                  agent_ran_at = ?, agent_result = ? WHERE id = ? AND closed = 0`, s.option.id, db.now(), JSON.stringify(result), poll.id);
+      if (!claimed.changes) return { skipped: 'closed' };
 
       const recipients = new Map(ctx.participants.map(p => [p.email, p]));
       recipients.set(ctx.owner.email.toLowerCase(), { email: ctx.owner.email.toLowerCase(), name: ctx.owner.name });
@@ -228,13 +248,14 @@ async function run(pollId, { link, linkFor = () => link, force = false } = {}) {
       const gcal = googleCalendarLink({ poll, option: s.option, details: [poll.description, link].filter(Boolean).join('\n') });
       for (const a of attendees) {
         try {
-          await mailer.calendarInvite({ to: a.email, ownerName: ctx.owner.name, poll, when: s.when, note: decision.participant_note, link: linkFor(a.email), gcal, ics });
+          await mailer.calendarInvite({ to: a.email, ownerName: ctx.owner.name, poll, when: s.when, note: decision.participant_note, link: await linkFor(a.email), gcal, ics });
           result.emailed++;
         } catch (e) { console.error('[agent] invite failed', a.email, e.message); }
       }
     } else {
-      db.prepare(`UPDATE polls SET agent_status = 'needs_options', agent_round = round,
-                  agent_ran_at = datetime('now'), agent_result = ? WHERE id = ?`).run(JSON.stringify(result), poll.id);
+      const claimed = await db.run(`UPDATE polls SET agent_status = 'needs_options', agent_round = round,
+                  agent_ran_at = ?, agent_result = ? WHERE id = ? AND closed = 0 AND round = ?`, db.now(), JSON.stringify(result), poll.id, poll.round);
+      if (!claimed.changes) return { skipped: 'changed' };
       try {
         await mailer.ownerNeedsOptions({
           to: ctx.owner.email, poll, link, message: decision.owner_message, suggestions: decision.suggestions,
@@ -243,16 +264,14 @@ async function run(pollId, { link, linkFor = () => link, force = false } = {}) {
         result.emailed = 1;
       } catch (e) { console.error('[agent] owner mail failed', e.message); }
     }
-    db.prepare('UPDATE polls SET agent_result = ? WHERE id = ?').run(JSON.stringify(result), poll.id);
+    await db.run('UPDATE polls SET agent_result = ? WHERE id = ?', JSON.stringify(result), poll.id);
     console.log(`[agent] poll ${poll.public_id}: ${decision.decision} (${source})`);
     return result;
   } catch (e) {
     console.error('[agent] failed', e);
-    db.prepare(`UPDATE polls SET agent_status = 'error', agent_ran_at = datetime('now'), agent_result = ? WHERE id = ?`)
-      .run(JSON.stringify({ error: 'הסוכן נתקל בשגיאה. נסו להפעיל אותו שוב.' }), pollId);
+    await db.run(`UPDATE polls SET agent_status = 'error', agent_ran_at = ?, agent_result = ? WHERE id = ?`,
+      db.now(), JSON.stringify({ error: 'הסוכן נתקל בשגיאה. נסו להפעיל אותו שוב.' }), pollId).catch(() => {});
     return { error: 'הסוכן נתקל בשגיאה' };
-  } finally {
-    running.delete(pollId);
   }
 }
 
